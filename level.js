@@ -92,7 +92,14 @@
           .every(Number.isFinite)
           ? Math.hypot(rotationRate.alpha, rotationRate.beta, rotationRate.gamma)
           : 0;
-        const tau = error > 0.18 || rate > 8 ? 0.026 : 0.12;
+        // Smooth small sensor noise strongly, but shorten the time constant
+        // progressively as the phone's actual tilt changes. Gyro movement
+        // alone (for example yaw on a table) must not move the bubble.
+        const angleMotion = clamp((error - 0.12) / 0.55, 0, 1);
+        const gyroMotion = clamp((rate - 10) / 35, 0, 1) *
+          clamp((error - 0.05) / 0.25, 0, 1);
+        const motion = Math.max(angleMotion, gyroMotion);
+        const tau = 0.28 - 0.215 * motion;
         const alpha = 1 - Math.exp(-dt / tau);
         this.filtered = unit({
           x: this.filtered.x + alpha * (raw.x - this.filtered.x),

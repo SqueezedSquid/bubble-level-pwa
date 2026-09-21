@@ -1,5 +1,5 @@
 /* Bump the cache version when publishing a changed application. */
-const CACHE = "bubble-level-v1";
+const CACHE = "bubble-level-v2";
 const ASSETS = [
   "./", "./index.html", "./styles.css", "./level.js", "./app.js",
   "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png",
@@ -9,7 +9,7 @@ const ASSETS = [
 self.addEventListener("install", (event) => {
   event.waitUntil(
     caches.open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
+      .then((cache) => cache.addAll(ASSETS.map((path) => new Request(path, { cache: "reload" }))))
       .then(() => self.skipWaiting())
   );
 });

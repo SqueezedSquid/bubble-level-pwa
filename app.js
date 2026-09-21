@@ -198,11 +198,12 @@
     ui["tilt-y"].textContent = `${fmt(reading.y)}°`;
     ui["tilt-total"].textContent = `${fmt(reading.total)}°`;
 
-    // Bubble floats toward the raised edge. Saturation keeps it inside the dial.
+    // Gravity points toward the low edge; the bubble floats in the opposite direction.
+    // Round subpixel movement so stationary sensor noise stays visually quiet.
     const limit = (ui.dial.clientWidth - ui.bubble.clientWidth) / 2 - 9;
     const pxPerDegree = limit / 8;
-    const dx = Math.max(-limit, Math.min(limit, reading.x * pxPerDegree));
-    const dy = Math.max(-limit, Math.min(limit, -reading.y * pxPerDegree));
+    const dx = Math.round(Math.max(-limit, Math.min(limit, -reading.x * pxPerDegree)));
+    const dy = Math.round(Math.max(-limit, Math.min(limit, reading.y * pxPerDegree)));
     ui.bubble.style.transform = `translate3d(calc(-50% + ${dx}px), calc(-50% + ${dy}px), 0)`;
     if (document.querySelector(".debug").open) renderDebug();
     refreshControls();
