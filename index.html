@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="sl">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111827">
+  <title>Bubble Level — Sensor Test</title>
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      background: #111827;
+      color: #f9fafb;
+      font: 16px/1.4 system-ui, sans-serif;
+    }
+
+    main {
+      max-width: 500px;
+      margin: 0 auto;
+    }
+
+    h1 { font-size: 1.5rem; margin: 0 0 6px; }
+    h2 { font-size: 1rem; margin: 0 0 12px; }
+    p { margin: 0 0 16px; color: #cbd5e1; }
+
+    button {
+      width: 100%;
+      padding: 15px;
+      margin: 8px 0 16px;
+      border: 0;
+      border-radius: 10px;
+      background: #38bdf8;
+      color: #082f49;
+      font: inherit;
+      font-weight: 700;
+    }
+
+    button:disabled { opacity: 0.5; }
+
+    section {
+      margin: 12px 0;
+      padding: 16px;
+      border: 1px solid #374151;
+      border-radius: 12px;
+      background: #1f2937;
+    }
+
+    .row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 5px 0;
+      border-bottom: 1px solid #374151;
+    }
+
+    .row:last-child { border-bottom: 0; }
+    .value { font-variant-numeric: tabular-nums; text-align: right; }
+    .hint { font-size: 0.85rem; color: #9ca3af; }
+    #status { color: #7dd3fc; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Bubble Level — Sensor Test</h1>
+    <p>Phase 1: surovi podatki senzorja, brez glajenja in kalibracije.</p>
+
+    <button id="start" type="button">Dovoli senzorje in začni</button>
+    <p id="status">Čakam na pritisk gumba.</p>
+
+    <section>
+      <h2>Acceleration including gravity</h2>
+      <div class="row"><span>X</span><span class="value" id="gx">—</span></div>
+      <div class="row"><span>Y</span><span class="value" id="gy">—</span></div>
+      <div class="row"><span>Z</span><span class="value" id="gz">—</span></div>
+      <div class="hint">Enota: m/s²</div>
+    </section>
+
+    <section>
+      <h2>Osnovni nagib</h2>
+      <div class="row"><span>X</span><span class="value" id="tiltX">—</span></div>
+      <div class="row"><span>Y</span><span class="value" id="tiltY">—</span></div>
+      <div class="hint">Približen nagib glede na težnost. ZERO še ni vključen.</div>
+    </section>
+
+    <section>
+      <h2>Hitrost dogodkov</h2>
+      <div class="row"><span>Dejanski interval</span><span class="value" id="dt">—</span></div>
+      <div class="row"><span>Dejanska frekvenca</span><span class="value" id="hz">—</span></div>
+      <div class="row"><span>Interval, ki ga sporoča API</span><span class="value" id="apiInterval">—</span></div>
+      <div class="hint">Frekvenca je izračunana iz dogodkov v zadnjih 2 sekundah.</div>
+    </section>
+
+    <section>
+      <h2>Noise / jitter pri mirovanju</h2>
+      <div class="row"><span>X: standardni odklon</span><span class="value" id="jitterX">—</span></div>
+      <div class="row"><span>Y: standardni odklon</span><span class="value" id="jitterY">—</span></div>
+      <div class="hint">Telefon položi na mirno podlago in počakaj 2 sekundi. Vrednosti so iz surovih podatkov.</div>
+    </section>
+
+    <section>
+      <h2>Orientation, če je na voljo</h2>
+      <div class="row"><span>Alpha</span><span class="value" id="alpha">—</span></div>
+      <div class="row"><span>Beta</span><span class="value" id="beta">—</span></div>
+      <div class="row"><span>Gamma</span><span class="value" id="gamma">—</span></div>
+      <div class="hint">Enota: stopinje. To so ločeni podatki API-ja.</div>
+    </section>
+
+    <section>
+      <h2>Gyroscope / rotation rate, če je na voljo</h2>
+      <div class="row"><span>Alpha</span><span class="value" id="rateAlpha">—</span></div>
+      <div class="row"><span>Beta</span><span class="value" id="rateBeta">—</span></div>
+      <div class="row"><span>Gamma</span><span class="value" id="rateGamma">—</span></div>
+      <div class="hint">Enota: °/s</div>
+    </section>
+  </main>
+
+  <script>
+    const startButton = document.querySelector("#start");
+    const status = document.querySelector("#status");
+    const fields = {};
+
+    for (const id of [
+      "gx", "gy", "gz", "tiltX", "tiltY",
+      "dt", "hz", "apiInterval", "jitterX", "jitterY",
+      "alpha", "beta", "gamma",
+      "rateAlpha", "rateBeta", "rateGamma"
+    ]) {
+      fields[id] = document.getElementById(id);
+    }
+
+    const timestamps = [];
+    const tiltSamples = [];
+    let previousTime = null;
+    let lastMotionTime = null;
+    let started = false;
+
+    function show(id, value, digits, unit = "") {
+      fields[id].textContent =
+        Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : "—";
+    }
+
+    function standardDeviation(values) {
+      if (values.length < 2) return NaN;
+
+      const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+      const variance = values.reduce(
+        (sum, value) => sum + (value - mean) ** 2, 0
+      ) / values.length;
+
+      return Math.sqrt(variance);
+    }
+
+    function onMotion(event) {
+      const gravity = event.accelerationIncludingGravity;
+
+      if (
+        !gravity ||
+        !Number.isFinite(gravity.x) ||
+        !Number.isFinite(gravity.y) ||
+        !Number.isFinite(gravity.z)
+      ) {
+        status.textContent = "Motion dogodki prihajajo, podatki o težnosti pa niso na voljo.";
+        return;
+      }
+
+      const now = performance.now();
+      lastMotionTime = now;
+      status.textContent = "Senzor deluje.";
+
+      show("gx", gravity.x, 3);
+      show("gy", gravity.y, 3);
+      show("gz", gravity.z, 3);
+
+      // Začasna 2D ocena nagiba iz vektorja težnosti.
+      const radiansToDegrees = 180 / Math.PI;
+      const x = Math.atan2(
+        gravity.x, Math.hypot(gravity.y, gravity.z)
+      ) * radiansToDegrees;
+      const y = Math.atan2(
+        gravity.y, Math.hypot(gravity.x, gravity.z)
+      ) * radiansToDegrees;
+
+      show("tiltX", x, 1, "°");
+      show("tiltY", y, 1, "°");
+
+      if (previousTime !== null) {
+        show("dt", now - previousTime, 1, " ms");
+      }
+      previousTime = now;
+
+      timestamps.push(now);
+      while (timestamps.length && timestamps[0] < now - 2000) {
+        timestamps.shift();
+      }
+
+      if (timestamps.length > 1) {
+        const elapsed = timestamps[timestamps.length - 1] - timestamps[0];
+        show("hz", (timestamps.length - 1) * 1000 / elapsed, 1, " Hz");
+      }
+
+      show("apiInterval", event.interval, 1, " ms");
+
+      tiltSamples.push({ time: now, x, y });
+      while (tiltSamples.length && tiltSamples[0].time < now - 2000) {
+        tiltSamples.shift();
+      }
+
+      show(
+        "jitterX",
+        standardDeviation(tiltSamples.map(sample => sample.x)),
+        3,
+        "°"
+      );
+      show(
+        "jitterY",
+        standardDeviation(tiltSamples.map(sample => sample.y)),
+        3,
+        "°"
+      );
+
+      const rate = event.rotationRate;
+      show("rateAlpha", rate?.alpha, 1);
+      show("rateBeta", rate?.beta, 1);
+      show("rateGamma", rate?.gamma, 1);
+    }
+
+    function onOrientation(event) {
+      show("alpha", event.alpha, 1, "°");
+      show("beta", event.beta, 1, "°");
+      show("gamma", event.gamma, 1, "°");
+    }
+
+    startButton.addEventListener("click", async () => {
+      if (started) return;
+
+      if (!window.isSecureContext) {
+        status.textContent = "Potreben je HTTPS. Test izvedi prek GitHub Pages.";
+        return;
+      }
+
+      if (!window.DeviceMotionEvent) {
+        status.textContent = "Ta brskalnik ne podpira DeviceMotionEvent.";
+        return;
+      }
+
+      startButton.disabled = true;
+      status.textContent = "Čakam na dovoljenje ...";
+
+      try {
+        // Obe zahtevi sprožimo neposredno ob pritisku gumba.
+        const motionRequest =
+          typeof DeviceMotionEvent.requestPermission === "function"
+            ? DeviceMotionEvent.requestPermission()
+            : Promise.resolve("not-required");
+
+        const orientationRequest =
+          typeof DeviceOrientationEvent !== "undefined" &&
+          typeof DeviceOrientationEvent.requestPermission === "function"
+            ? DeviceOrientationEvent.requestPermission()
+            : Promise.resolve("not-required");
+
+        const [motionResult, orientationResult] = await Promise.allSettled([
+          motionRequest,
+          orientationRequest
+        ]);
+
+        if (
+          motionResult.status === "rejected" ||
+          motionResult.value === "denied"
+        ) {
+          status.textContent = "Dostop do motion senzorja ni dovoljen.";
+          startButton.disabled = false;
+          return;
+        }
+
+        window.addEventListener("devicemotion", onMotion);
+
+        if (
+          orientationResult.status === "fulfilled" &&
+          orientationResult.value !== "denied"
+        ) {
+          window.addEventListener("deviceorientation", onOrientation);
+        }
+
+        started = true;
+        status.textContent = "Dovoljenje odobreno. Čakam na podatke senzorja ...";
+      } catch (error) {
+        status.textContent = `Napaka pri dovoljenju: ${error.message}`;
+        startButton.disabled = false;
+      }
+    });
+
+    setInterval(() => {
+      if (
+        started &&
+        lastMotionTime === null &&
+        status.textContent.startsWith("Dovoljenje odobreno")
+      ) {
+        status.textContent = "Dovoljenje je odobreno, vendar motion dogodki še ne prihajajo.";
+      }
+    }, 3000);
+  </script>
+</body>
+</html>
