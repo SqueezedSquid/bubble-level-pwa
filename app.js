@@ -46,6 +46,7 @@
   let lastInterval = null;
   let calibrationA = null;
   let capture = null;
+  const bubbleMotion = { x: 0, y: 0, vx: 0, vy: 0, lastFrame: null };
   const times = [];
   const noise = [];
 
@@ -190,7 +191,24 @@
     ui.bias.textContent = `${fmt(engine.bias.x, 3)} / ${fmt(engine.bias.y, 3)} m/s²`;
   }
 
-  function render() {
+  function springStep(position, velocity, target, dt) {
+    // Damped spring: a little inertia and overshoot, with no permanent lag.
+    const frequency = 28;
+    const damping = 0.7;
+    const decayRate = damping * frequency;
+    const oscillation = frequency * Math.sqrt(1 - damping * damping);
+    const error = position - target;
+    const decay = Math.exp(-decayRate * dt);
+    const sine = Math.sin(oscillation * dt);
+    const cosine = Math.cos(oscillation * dt);
+    const nextPosition = target + decay *
+      (error * cosine + (velocity + decayRate * error) / oscillation * sine);
+    const nextVelocity = decay *
+      (velocity * cosine - (decayRate * velocity + frequency * frequency * error) / oscillation * sine);
+    return [nextPosition, nextVelocity];
+  }
+
+  function render(frameTime) {
     renderScheduled = false;
     const reading = engine.measureCurrent();
     if (!reading) return;
@@ -199,14 +217,46 @@
     ui["tilt-total"].textContent = `${fmt(reading.total)}°`;
 
     // Gravity points toward the low edge; the bubble floats in the opposite direction.
-    // Round subpixel movement so stationary sensor noise stays visually quiet.
+    // The spring gives the bubble visual mass; numeric readings use the sensor directly.
     const limit = (ui.dial.clientWidth - ui.bubble.clientWidth) / 2 - 9;
     const pxPerDegree = limit / 8;
-    const dx = Math.round(Math.max(-limit, Math.min(limit, -reading.x * pxPerDegree)));
-    const dy = Math.round(Math.max(-limit, Math.min(limit, reading.y * pxPerDegree)));
+    const targetX = Math.max(-limit, Math.min(limit, -reading.x * pxPerDegree));
+    const targetY = Math.max(-limit, Math.min(limit, reading.y * pxPerDegree));
+    const now = Number.isFinite(frameTime) ? frameTime : performance.now();
+    if (bubbleMotion.lastFrame === null) {
+      bubbleMotion.x = targetX;
+      bubbleMotion.y = targetY;
+    } else {
+      const dt = Math.max(0, Math.min((now - bubbleMotion.lastFrame) / 1000, 0.06));
+      [bubbleMotion.x, bubbleMotion.vx] = springStep(bubbleMotion.x, bubbleMotion.vx, targetX, dt);
+      [bubbleMotion.y, bubbleMotion.vy] = springStep(bubbleMotion.y, bubbleMotion.vy, targetY, dt);
+    }
+    bubbleMotion.lastFrame = now;
+    for (const axis of ["x", "y"]) {
+      const velocity = axis === "x" ? "vx" : "vy";
+      if (bubbleMotion[axis] > limit) {
+        bubbleMotion[axis] = limit;
+        bubbleMotion[velocity] = Math.min(0, bubbleMotion[velocity]);
+      } else if (bubbleMotion[axis] < -limit) {
+        bubbleMotion[axis] = -limit;
+        bubbleMotion[velocity] = Math.max(0, bubbleMotion[velocity]);
+      }
+    }
+    const dx = Math.round(bubbleMotion.x);
+    const dy = Math.round(bubbleMotion.y);
     ui.bubble.style.transform = `translate3d(calc(-50% + ${dx}px), calc(-50% + ${dy}px), 0)`;
     if (document.querySelector(".debug").open) renderDebug();
     refreshControls();
+    if (Math.abs(bubbleMotion.x - targetX) > 0.25 ||
+        Math.abs(bubbleMotion.y - targetY) > 0.25 ||
+        Math.abs(bubbleMotion.vx) > 1 || Math.abs(bubbleMotion.vy) > 1) {
+      scheduleRender();
+    } else {
+      bubbleMotion.x = targetX;
+      bubbleMotion.y = targetY;
+      bubbleMotion.vx = 0;
+      bubbleMotion.vy = 0;
+    }
   }
 
   function scheduleRender() {
