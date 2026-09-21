@@ -1,9 +1,9 @@
 /* Bump the cache version when publishing a changed application. */
-const CACHE = "bubble-level-v4";
+const CACHE = "bubble-level-v5";
 const ASSETS = [
   "./", "./index.html", "./styles.css", "./level.js", "./app.js",
   "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png",
-  "./icons/apple-touch-icon.png"
+  "./icons/apple-touch-icon.png", "./apple-touch-icon.png", "./apple-touch-icon.png?v=5"
 ];
 
 self.addEventListener("install", (event) => {
