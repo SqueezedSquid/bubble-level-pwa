@@ -81,6 +81,8 @@
       <h2>Osnovni nagib</h2>
       <div class="row"><span>X</span><span class="value" id="tiltX">—</span></div>
       <div class="row"><span>Y</span><span class="value" id="tiltY">—</span></div>
+      <div class="row"><span>Skupni nagib ravnine</span><span class="value" id="totalTilt">—</span></div>
+      <div class="row"><span>Velikost vektorja težnosti</span><span class="value" id="gravityMagnitude">—</span></div>
       <div class="hint">Približen nagib glede na težnost. ZERO še ni vključen.</div>
     </section>
 
@@ -116,13 +118,14 @@
     </section>
   </main>
 
+  <script src="./measurement.js"></script>
   <script>
     const startButton = document.querySelector("#start");
     const status = document.querySelector("#status");
     const fields = {};
 
     for (const id of [
-      "gx", "gy", "gz", "tiltX", "tiltY",
+      "gx", "gy", "gz", "tiltX", "tiltY", "totalTilt", "gravityMagnitude",
       "dt", "hz", "apiInterval", "jitterX", "jitterY",
       "alpha", "beta", "gamma",
       "rateAlpha", "rateBeta", "rateGamma"
@@ -174,16 +177,20 @@
       show("gz", gravity.z, 3);
 
       // Začasna 2D ocena nagiba iz vektorja težnosti.
-      const radiansToDegrees = 180 / Math.PI;
-      const x = Math.atan2(
-        gravity.x, Math.hypot(gravity.y, gravity.z)
-      ) * radiansToDegrees;
-      const y = Math.atan2(
-        gravity.y, Math.hypot(gravity.x, gravity.z)
-      ) * radiansToDegrees;
+      const measurement = LevelMeasurement.fromGravity(gravity);
+
+      if (!measurement) {
+        status.textContent = "Vektor težnosti ni veljaven.";
+        return;
+      }
+
+      const x = measurement.xDegrees;
+      const y = measurement.yDegrees;
 
       show("tiltX", x, 1, "°");
       show("tiltY", y, 1, "°");
+      show("totalTilt", measurement.totalDegrees, 1, "°");
+      show("gravityMagnitude", measurement.magnitude, 3, " m/s²");
 
       if (previousTime !== null) {
         show("dt", now - previousTime, 1, " ms");
