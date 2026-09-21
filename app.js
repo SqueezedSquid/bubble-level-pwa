@@ -7,7 +7,7 @@
     "start", "status", "mode", "bubble", "dial", "tilt-x", "tilt-y",
     "tilt-total", "zero", "reset", "hz", "interval", "api-interval",
     "jitter", "gravity", "magnitude", "orientation", "rotation", "bias",
-    "offline", "calibrate", "clear-cal", "cal-status"
+    "offline", "calibrate", "clear-cal", "cal-status", "feel"
   ].map((id) => [id, $(id)]));
   ui.apiInterval = ui["api-interval"];
   ui.calStatus = ui["cal-status"];
@@ -33,6 +33,16 @@
   }
   const savedZero = storage.read("level-zero-v1");
   if (savedZero) engine.setZero(savedZero);
+
+  const feelModes = {
+    calm: { frequency: 10.5, damping: 0.9 },
+    balanced: { frequency: 17, damping: 0.8 },
+    quick: { frequency: 28, damping: 0.7 }
+  };
+  const savedFeel = storage.read("level-feel-v1");
+  if (ui.feel) {
+    ui.feel.value = Object.prototype.hasOwnProperty.call(feelModes, savedFeel) ? savedFeel : "calm";
+  }
 
   let started = false;
   let lastMotionAt = 0;
@@ -193,8 +203,7 @@
 
   function springStep(position, velocity, target, dt) {
     // Damped spring: a little inertia and overshoot, with no permanent lag.
-    const frequency = 28;
-    const damping = 0.7;
+    const { frequency, damping } = feelModes[ui.feel?.value] || feelModes.calm;
     const decayRate = damping * frequency;
     const oscillation = frequency * Math.sqrt(1 - damping * damping);
     const error = position - target;
@@ -327,6 +336,12 @@
     noise.length = 0;
     refreshControls();
   });
+  if (ui.feel) {
+    ui.feel.addEventListener("change", () => {
+      storage.write("level-feel-v1", ui.feel.value);
+      scheduleRender();
+    });
+  }
 
   setInterval(() => {
     if (started && performance.now() - lastMotionAt > 3000) {

@@ -1,5 +1,5 @@
 /* Bump the cache version when publishing a changed application. */
-const CACHE = "bubble-level-v3";
+const CACHE = "bubble-level-v4";
 const ASSETS = [
   "./", "./index.html", "./styles.css", "./level.js", "./app.js",
   "./manifest.webmanifest", "./icons/icon-192.png", "./icons/icon-512.png",
