@@ -1,0 +1,295 @@
+(function () {
+  "use strict";
+
+  const engine = new LevelMath.LevelEngine();
+  const $ = (id) => document.getElementById(id);
+  const ui = Object.fromEntries([
+    "start", "status", "mode", "bubble", "dial", "tilt-x", "tilt-y",
+    "tilt-total", "zero", "reset", "hz", "interval", "api-interval",
+    "jitter", "gravity", "magnitude", "orientation", "rotation", "bias",
+    "offline", "calibrate", "clear-cal", "cal-status"
+  ].map((id) => [id, $(id)]));
+  ui.apiInterval = ui["api-interval"];
+  ui.calStatus = ui["cal-status"];
+  ui.clearCal = ui["clear-cal"];
+
+  const fmt = (number, digits = 1) =>
+    Number.isFinite(number) ? number.toFixed(digits).replace(".", ",") : "—";
+  const storage = {
+    read(key) {
+      try { return JSON.parse(localStorage.getItem(key)); } catch { return null; }
+    },
+    write(key, value) {
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Optional persistence. */ }
+    },
+    remove(key) {
+      try { localStorage.removeItem(key); } catch { /* Optional persistence. */ }
+    }
+  };
+
+  const savedBias = storage.read("level-bias-v1");
+  if (savedBias && Math.abs(savedBias.x) < 1 && Math.abs(savedBias.y) < 1 && savedBias.z === 0) {
+    engine.setBias(savedBias);
+  }
+  const savedZero = storage.read("level-zero-v1");
+  if (savedZero) engine.setZero(savedZero);
+
+  let started = false;
+  let lastMotionAt = 0;
+  let previousEventAt = 0;
+  let lastDebugAt = 0;
+  let renderScheduled = false;
+  let latestGravity = null;
+  let latestRotation = null;
+  let latestOrientation = null;
+  let latestApiInterval = null;
+  let lastInterval = null;
+  let calibrationA = null;
+  let capture = null;
+  const times = [];
+  const noise = [];
+
+  function setStatus(message) {
+    if (ui.status.textContent !== message) ui.status.textContent = message;
+  }
+
+  function saveZero() {
+    if (engine.zero) storage.write("level-zero-v1", engine.zero);
+    else storage.remove("level-zero-v1");
+  }
+
+  function refreshControls() {
+    ui.mode.textContent = engine.zero ? "ZERO AKTIVEN" : "STANDARD";
+    ui.mode.classList.toggle("is-zero", Boolean(engine.zero));
+    ui.zero.disabled = !started || !engine.filtered || Boolean(capture);
+    ui.reset.disabled = !engine.zero;
+    ui.calibrate.disabled = !started || !engine.filtered || Boolean(capture);
+    ui.clearCal.disabled = engine.bias.x === 0 && engine.bias.y === 0;
+  }
+
+  function standardDeviation(values) {
+    if (values.length < 2) return NaN;
+    const mean = values.reduce((sum, n) => sum + n, 0) / values.length;
+    return Math.sqrt(values.reduce((sum, n) => sum + (n - mean) ** 2, 0) / values.length);
+  }
+
+  function meanVector(samples) {
+    const sum = samples.reduce((a, v) => ({
+      x: a.x + v.x, y: a.y + v.y, z: a.z + v.z
+    }), { x: 0, y: 0, z: 0 });
+    return { x: sum.x / samples.length, y: sum.y / samples.length, z: sum.z / samples.length };
+  }
+
+  function finishCapture() {
+    const { samples, step } = capture;
+    capture = null;
+    const mean = samples.length ? meanVector(samples) : null;
+    const scatter = mean ? Math.sqrt(samples.reduce((sum, v) =>
+      sum + (v.x - mean.x) ** 2 + (v.y - mean.y) ** 2 + (v.z - mean.z) ** 2, 0
+    ) / samples.length) : Infinity;
+
+    if (samples.length < 20 || scatter > 0.22) {
+      ui.calStatus.textContent = "Telefon se je med zajemom premikal. Počakaj, da miruje, in ponovi.";
+      refreshControls();
+      return;
+    }
+
+    if (step === "A") {
+      calibrationA = mean;
+      ui.calibrate.textContent = "Zajemi položaj B";
+      ui.calStatus.textContent = "A je zajet. Obrni telefon za 180° na isti površini, počakaj in zajemi B.";
+    } else {
+      if (Math.abs(calibrationA.z - mean.z) > 0.5) {
+        ui.calStatus.textContent = "Položaja nista na isti strani ravnine. Ponovi položaj B.";
+        refreshControls();
+        return;
+      }
+      const bias = { x: (calibrationA.x + mean.x) / 2, y: (calibrationA.y + mean.y) / 2, z: 0 };
+      if (Math.abs(bias.x) > 1 || Math.abs(bias.y) > 1) {
+        ui.calStatus.textContent = "Odmik je prevelik. Začni znova na isti površini.";
+        calibrationA = null;
+        ui.calibrate.textContent = "Zajemi položaj A";
+        refreshControls();
+        return;
+      }
+      engine.setBias(bias);
+      storage.write("level-bias-v1", bias);
+      saveZero();
+      calibrationA = null;
+      ui.calibrate.textContent = "Zajemi položaj A";
+      ui.calStatus.textContent = "Kalibracija shranjena. ZERO je ponastavljen.";
+      noise.length = 0;
+    }
+    refreshControls();
+    scheduleRender();
+  }
+
+  function onMotion(event) {
+    const g = event.accelerationIncludingGravity;
+    const now = performance.now();
+    if (!g || !Number.isFinite(g.x) || !Number.isFinite(g.y) || !Number.isFinite(g.z)) {
+      setStatus("Dogodki prihajajo, podatki o težnosti pa niso na voljo.");
+      return;
+    }
+
+    latestGravity = { x: g.x, y: g.y, z: g.z };
+    latestRotation = event.rotationRate;
+    latestApiInterval = event.interval;
+    lastInterval = previousEventAt ? now - previousEventAt : null;
+    previousEventAt = now;
+    lastMotionAt = now;
+
+    const reading = engine.update(latestGravity, latestRotation, now);
+    if (!reading) {
+      setStatus("Podatek senzorja ni primeren za merjenje.");
+      return;
+    }
+
+    times.push(now);
+    while (times.length > 1 && times[0] < now - 2000) times.shift();
+    noise.push({ t: now, x: reading.rawAngles.x, y: reading.rawAngles.y });
+    while (noise.length > 1 && noise[0].t < now - 2000) noise.shift();
+
+    if (capture) {
+      capture.samples.push(latestGravity);
+      if (now - capture.startedAt >= 1500) finishCapture();
+    }
+
+    setStatus(reading.motionWarning
+      ? "Telefon se premika ali pospešuje; trenutni nagib je lahko manj zanesljiv."
+      : "Merjenje deluje.");
+    scheduleRender();
+  }
+
+  function onOrientation(event) {
+    latestOrientation = { alpha: event.alpha, beta: event.beta, gamma: event.gamma };
+  }
+
+  function renderDebug() {
+    const now = performance.now();
+    if (now - lastDebugAt < 250) return;
+    lastDebugAt = now;
+    const span = times.length > 1 ? times[times.length - 1] - times[0] : 0;
+    ui.hz.textContent = span > 0 ? `${fmt((times.length - 1) * 1000 / span)} Hz` : "—";
+    ui.interval.textContent = `${fmt(lastInterval)} ms`;
+    ui.apiInterval.textContent = `${fmt(latestApiInterval)} ms`;
+    ui.jitter.textContent = noise.length > 1
+      ? `${fmt(standardDeviation(noise.map(v => v.x)), 3)}° / ${fmt(standardDeviation(noise.map(v => v.y)), 3)}°`
+      : "—";
+    if (latestGravity) {
+      ui.gravity.textContent = [latestGravity.x, latestGravity.y, latestGravity.z]
+        .map(v => fmt(v, 3)).join(" / ") + " m/s²";
+    }
+    ui.magnitude.textContent = `${fmt(engine.last?.magnitude, 3)} m/s²`;
+    ui.orientation.textContent = latestOrientation
+      ? [latestOrientation.alpha, latestOrientation.beta, latestOrientation.gamma].map(v => fmt(v)).join(" / ") + "°"
+      : "—";
+    ui.rotation.textContent = latestRotation
+      ? [latestRotation.alpha, latestRotation.beta, latestRotation.gamma].map(v => fmt(v)).join(" / ") + " °/s"
+      : "—";
+    ui.bias.textContent = `${fmt(engine.bias.x, 3)} / ${fmt(engine.bias.y, 3)} m/s²`;
+  }
+
+  function render() {
+    renderScheduled = false;
+    const reading = engine.measureCurrent();
+    if (!reading) return;
+    ui["tilt-x"].textContent = `${fmt(reading.x)}°`;
+    ui["tilt-y"].textContent = `${fmt(reading.y)}°`;
+    ui["tilt-total"].textContent = `${fmt(reading.total)}°`;
+
+    // Bubble floats toward the raised edge. Saturation keeps it inside the dial.
+    const limit = (ui.dial.clientWidth - ui.bubble.clientWidth) / 2 - 9;
+    const pxPerDegree = limit / 8;
+    const dx = Math.max(-limit, Math.min(limit, reading.x * pxPerDegree));
+    const dy = Math.max(-limit, Math.min(limit, -reading.y * pxPerDegree));
+    ui.bubble.style.transform = `translate3d(calc(-50% + ${dx}px), calc(-50% + ${dy}px), 0)`;
+    if (document.querySelector(".debug").open) renderDebug();
+    refreshControls();
+  }
+
+  function scheduleRender() {
+    if (!renderScheduled) {
+      renderScheduled = true;
+      requestAnimationFrame(render);
+    }
+  }
+
+  ui.start.addEventListener("click", async () => {
+    if (!window.isSecureContext || !window.DeviceMotionEvent) {
+      setStatus("Senzor zahteva podprt brskalnik in povezavo HTTPS.");
+      return;
+    }
+    ui.start.disabled = true;
+    setStatus("Čakam na dovoljenje za senzor …");
+    try {
+      // Both permission requests are initiated synchronously within the tap.
+      const motion = typeof DeviceMotionEvent.requestPermission === "function"
+        ? DeviceMotionEvent.requestPermission() : Promise.resolve("not-required");
+      const orientation = typeof DeviceOrientationEvent !== "undefined" &&
+        typeof DeviceOrientationEvent.requestPermission === "function"
+        ? DeviceOrientationEvent.requestPermission() : Promise.resolve("not-required");
+      const [m, o] = await Promise.allSettled([motion, orientation]);
+      if (m.status === "rejected" || m.value === "denied") {
+        setStatus("Dovoljenje za senzor gibanja ni odobreno.");
+        ui.start.disabled = false;
+        return;
+      }
+      window.addEventListener("devicemotion", onMotion);
+      if (o.status === "fulfilled" && o.value !== "denied") {
+        window.addEventListener("deviceorientation", onOrientation);
+      }
+      started = true;
+      ui.start.hidden = true;
+      setStatus("Čakam na prve podatke senzorja …");
+      refreshControls();
+    } catch (error) {
+      setStatus(`Dovoljenje ni uspelo: ${error.message}`);
+      ui.start.disabled = false;
+    }
+  });
+
+  ui.zero.addEventListener("click", () => {
+    if (!engine.setZero()) return;
+    saveZero();
+    noise.length = 0;
+    scheduleRender();
+  });
+  ui.reset.addEventListener("click", () => {
+    engine.resetZero();
+    saveZero();
+    noise.length = 0;
+    scheduleRender();
+  });
+  ui.calibrate.addEventListener("click", () => {
+    capture = { step: calibrationA ? "B" : "A", samples: [], startedAt: performance.now() };
+    ui.calStatus.textContent = `Zajemam položaj ${capture.step}: telefon naj miruje približno 1,5 sekunde …`;
+    refreshControls();
+  });
+  ui.clearCal.addEventListener("click", () => {
+    engine.setBias({ x: 0, y: 0, z: 0 });
+    storage.remove("level-bias-v1");
+    saveZero();
+    calibrationA = null;
+    ui.calibrate.textContent = "Zajemi položaj A";
+    ui.calStatus.textContent = "Kalibracija in ZERO sta ponastavljena.";
+    noise.length = 0;
+    refreshControls();
+  });
+
+  setInterval(() => {
+    if (started && performance.now() - lastMotionAt > 3000) {
+      setStatus("Senzor ne pošilja podatkov. Vrni se v aplikacijo ali jo odpri znova.");
+    }
+  }, 3000);
+
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.register("./sw.js")
+      .then(() => navigator.serviceWorker.ready)
+      .then(() => { ui.offline.textContent = "Pripravljen; preveri v letalskem načinu"; })
+      .catch(() => { ui.offline.textContent = "Shranjevanje za offline ni uspelo"; });
+  } else {
+    ui.offline.textContent = "Ta brskalnik ne podpira offline shranjevanja";
+  }
+  refreshControls();
+})();
