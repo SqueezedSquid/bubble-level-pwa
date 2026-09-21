@@ -35,13 +35,21 @@
   if (savedZero) engine.setZero(savedZero);
 
   const feelModes = {
-    calm: { frequency: 10.5, damping: 0.9 },
-    balanced: { frequency: 17, damping: 0.8 },
-    quick: { frequency: 28, damping: 0.7 }
+    1: { frequency: 3, damping: 0.96 },
+    2: { frequency: 4.1, damping: 0.95 },
+    3: { frequency: 5.2, damping: 0.94 },
+    4: { frequency: 6.5, damping: 0.93 },
+    5: { frequency: 8.2, damping: 0.92 },
+    6: { frequency: 10.5, damping: 0.9 },
+    7: { frequency: 13, damping: 0.85 },
+    8: { frequency: 17, damping: 0.8 },
+    9: { frequency: 22, damping: 0.75 },
+    10: { frequency: 28, damping: 0.7 }
   };
-  const savedFeel = storage.read("level-feel-v1");
+  const previousFeel = { calm: "6", balanced: "8", quick: "10" };
+  const savedFeel = storage.read("level-feel-v2") ?? previousFeel[storage.read("level-feel-v1")];
   if (ui.feel) {
-    ui.feel.value = Object.prototype.hasOwnProperty.call(feelModes, savedFeel) ? savedFeel : "calm";
+    ui.feel.value = Object.prototype.hasOwnProperty.call(feelModes, savedFeel) ? savedFeel : "6";
   }
 
   let started = false;
@@ -203,7 +211,7 @@
 
   function springStep(position, velocity, target, dt) {
     // Damped spring: a little inertia and overshoot, with no permanent lag.
-    const { frequency, damping } = feelModes[ui.feel?.value] || feelModes.calm;
+    const { frequency, damping } = feelModes[ui.feel?.value] || feelModes[6];
     const decayRate = damping * frequency;
     const oscillation = frequency * Math.sqrt(1 - damping * damping);
     const error = position - target;
@@ -338,7 +346,7 @@
   });
   if (ui.feel) {
     ui.feel.addEventListener("change", () => {
-      storage.write("level-feel-v1", ui.feel.value);
+      storage.write("level-feel-v2", ui.feel.value);
       scheduleRender();
     });
   }
